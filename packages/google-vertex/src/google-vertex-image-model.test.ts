@@ -374,6 +374,271 @@ describe('GoogleVertexImageModel', () => {
     });
   });
 
+  describe('Image Editing', () => {
+    function prepareJsonResponse({
+      headers,
+    }: {
+      headers?: Record<string, string>;
+    } = {}) {
+      server.urls[
+        'https://api.example.com/models/imagen-3.0-generate-002:predict'
+      ].response = {
+        type: 'json-value',
+        headers,
+        body: {
+          predictions: [
+            {
+              mimeType: 'image/png',
+              bytesBase64Encoded: 'edited-base64-image',
+            },
+          ],
+        },
+      };
+    }
+
+    it('should send edit request with files and mask', async () => {
+      prepareJsonResponse();
+
+      // Create test image data (base64 encoded)
+      const imageData = 'base64-source-image';
+      const maskData = 'base64-mask-image';
+
+      await model.doGenerate({
+        prompt: 'A sunlit indoor lounge with a flamingo',
+        files: [
+          {
+            type: 'file',
+            data: imageData,
+            mediaType: 'image/png',
+          },
+        ],
+        mask: {
+          type: 'file',
+          data: maskData,
+          mediaType: 'image/png',
+        },
+        n: 1,
+        size: undefined,
+        aspectRatio: undefined,
+        seed: undefined,
+        providerOptions: {},
+      });
+
+      expect(await server.calls[0].requestBodyJson).toStrictEqual({
+        instances: [
+          {
+            prompt: 'A sunlit indoor lounge with a flamingo',
+            referenceImages: [
+              {
+                referenceType: 'REFERENCE_TYPE_RAW',
+                referenceId: 1,
+                referenceImage: {
+                  bytesBase64Encoded: imageData,
+                },
+              },
+              {
+                referenceType: 'REFERENCE_TYPE_MASK',
+                referenceId: 2,
+                referenceImage: {
+                  bytesBase64Encoded: maskData,
+                },
+                maskImageConfig: {
+                  maskMode: 'MASK_MODE_USER_PROVIDED',
+                },
+              },
+            ],
+          },
+        ],
+        parameters: {
+          sampleCount: 1,
+          editMode: 'EDIT_MODE_INPAINT_INSERTION',
+        },
+      });
+    });
+
+    it('should send edit request with Uint8Array data', async () => {
+      prepareJsonResponse();
+
+      // Create test Uint8Array data (represents 'hello' in bytes)
+      const imageUint8Array = new Uint8Array([104, 101, 108, 108, 111]);
+      const maskUint8Array = new Uint8Array([119, 111, 114, 108, 100]);
+
+      await model.doGenerate({
+        prompt: 'Edit this image',
+        files: [
+          {
+            type: 'file',
+            data: imageUint8Array,
+            mediaType: 'image/png',
+          },
+        ],
+        mask: {
+          type: 'file',
+          data: maskUint8Array,
+          mediaType: 'image/png',
+        },
+        n: 1,
+        size: undefined,
+        aspectRatio: undefined,
+        seed: undefined,
+        providerOptions: {},
+      });
+
+      const requestBody = await server.calls[0].requestBodyJson;
+      // Check that the data was converted to base64
+      expect(
+        requestBody.instances[0].referenceImages[0].referenceImage
+          .bytesBase64Encoded,
+      ).toBe('aGVsbG8='); // 'hello' in base64
+      expect(
+        requestBody.instances[0].referenceImages[1].referenceImage
+          .bytesBase64Encoded,
+      ).toBe('d29ybGQ='); // 'world' in base64
+    });
+
+    it('should send edit request with custom edit options', async () => {
+      prepareJsonResponse();
+
+      await model.doGenerate({
+        prompt: 'Remove the object',
+        files: [
+          {
+            type: 'file',
+            data: 'base64-source-image',
+            mediaType: 'image/png',
+          },
+        ],
+        mask: {
+          type: 'file',
+          data: 'base64-mask-image',
+          mediaType: 'image/png',
+        },
+        n: 1,
+        size: undefined,
+        aspectRatio: undefined,
+        seed: undefined,
+        providerOptions: {
+          vertex: {
+            editMode: 'EDIT_MODE_INPAINT_REMOVAL',
+            editConfig: {
+              baseSteps: 50,
+            },
+            maskMode: 'MASK_MODE_USER_PROVIDED',
+            maskDilation: 0.01,
+          },
+        },
+      });
+
+      expect(await server.calls[0].requestBodyJson).toStrictEqual({
+        instances: [
+          {
+            prompt: 'Remove the object',
+            referenceImages: [
+              {
+                referenceType: 'REFERENCE_TYPE_RAW',
+                referenceId: 1,
+                referenceImage: {
+                  bytesBase64Encoded: 'base64-source-image',
+                },
+              },
+              {
+                referenceType: 'REFERENCE_TYPE_MASK',
+                referenceId: 2,
+                referenceImage: {
+                  bytesBase64Encoded: 'base64-mask-image',
+                },
+                maskImageConfig: {
+                  maskMode: 'MASK_MODE_USER_PROVIDED',
+                  dilation: 0.01,
+                },
+              },
+            ],
+          },
+        ],
+        parameters: {
+          sampleCount: 1,
+          editMode: 'EDIT_MODE_INPAINT_REMOVAL',
+          editConfig: {
+            baseSteps: 50,
+          },
+        },
+      });
+    });
+
+    it('should extract the edited images', async () => {
+      prepareJsonResponse();
+
+      const result = await model.doGenerate({
+        prompt: 'Edit this image',
+        files: [
+          {
+            type: 'file',
+            data: 'base64-source-image',
+            mediaType: 'image/png',
+          },
+        ],
+        mask: {
+          type: 'file',
+          data: 'base64-mask-image',
+          mediaType: 'image/png',
+        },
+        n: 1,
+        size: undefined,
+        aspectRatio: undefined,
+        seed: undefined,
+        providerOptions: {},
+      });
+
+      expect(result.images).toStrictEqual(['edited-base64-image']);
+    });
+
+    it('should send edit request without mask (for operations that do not require mask)', async () => {
+      prepareJsonResponse();
+
+      await model.doGenerate({
+        prompt: 'Upscale this image',
+        files: [
+          {
+            type: 'file',
+            data: 'base64-source-image',
+            mediaType: 'image/png',
+          },
+        ],
+        mask: undefined,
+        n: 1,
+        size: undefined,
+        aspectRatio: undefined,
+        seed: undefined,
+        providerOptions: {
+          vertex: {
+            editMode: 'EDIT_MODE_CONTROLLED_EDITING',
+          },
+        },
+      });
+
+      expect(await server.calls[0].requestBodyJson).toStrictEqual({
+        instances: [
+          {
+            prompt: 'Upscale this image',
+            referenceImages: [
+              {
+                referenceType: 'REFERENCE_TYPE_RAW',
+                referenceId: 1,
+                referenceImage: {
+                  bytesBase64Encoded: 'base64-source-image',
+                },
+              },
+            ],
+          },
+        ],
+        parameters: {
+          sampleCount: 1,
+          editMode: 'EDIT_MODE_CONTROLLED_EDITING',
+        },
+      });
+    });
+  });
+
   describe('Imagen 4 Models', () => {
     describe('imagen-4.0-generate-preview-06-06', () => {
       const imagen4Model = new GoogleVertexImageModel(
